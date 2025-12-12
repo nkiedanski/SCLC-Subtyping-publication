@@ -1,0 +1,107 @@
+---
+title: "Model Evaluation"
+format: 
+  html: 
+    toc: true
+    toc-location: left
+    self-contained: false  
+---
+
+# Import Packages
+```{r}
+#| output: false 
+
+library(dplyr)
+library(fst)
+library(tidymodels)
+library(kernlab)
+```
+
+
+# Import data
+
+CCLE SCLC cell lines were downloaded from DEPMAP (version 23Q4) and are related to the study Ghandi *et al.*, 2019.
+
+Gene expression values were already transformed to log2(TPM + 1).
+
+Cell line names were filtered based on the Supplementary Data from Rudin *et al.*, 2019 and matched with their corresponding subtype labels (see Supplementary Material of this publication).
+
+Genes were filtered to include the 80 genes within the TF-associated signatures required for the SVM NAPY classifier. Prior to this, three genes were renamed to resolve discrepancies in gene symbols: ALKAL1 was changed to FAM150A, NECTIN4 to PVRL4, and MINAR2 to KIAA1024L.
+
+The final dataset consists of:
+
+Rows (n=48): 48 cell lines
+
+Columns (m=82): Cell line name, 80 genes, subtype label
+
+
+```{r}
+ccle_data = fst::read.fst(path = "../doc/ccle_sclc.fst")
+```
+
+# Import model
+```{r}
+svm_model = base::readRDS("../model/svm_model.rds")
+```
+
+```{r}
+#model specifications
+svm_model
+```
+
+
+# Cell lines prediction
+
+```{r}
+res = svm_model %>% predict(new_data = ccle_data) %>%
+  dplyr::bind_cols(ccle_data) %>%
+  dplyr::select(Name, subype_rudin_label, .pred_class) %>%
+  dplyr::mutate(.pred_class = paste0("SCLC-", .pred_class))
+```
+
+
+# Subtypes evaluation
+
+```{r}
+# definition of metrics of interest
+metrics = yardstick::metric_set(yardstick::accuracy, 
+                                yardstick::bal_accuracy,
+                                yardstick::sens, 
+                                yardstick::spec, 
+                                yardstick::precision,
+                                yardstick::recall,
+                                yardstick::f_meas,
+                                yardstick::npv,
+                                yardstick::ppv)
+```
+
+
+```{r}
+# macro-average metrics
+res %>%
+  dplyr::mutate(across(all_of(c(".pred_class", "subype_rudin_label")), as.factor)) %>%
+  metrics(., truth=subype_rudin_label , estimate=.pred_class) %>%
+  dplyr::mutate(.estimate = round(.estimate, 2))
+```
+
+
+```{r}
+# confusion matrix
+res %>%
+  dplyr::mutate(across(all_of(c(".pred_class", "subype_rudin_label")), as.factor)) %>%
+  yardstick::conf_mat(data=., truth=subype_rudin_label , estimate=.pred_class)
+```
+
+```{r}
+# per-class metrics
+source("fun_metrics_pclass.R")
+
+res %>%
+  dplyr::mutate(across(all_of(c(".pred_class", "subype_rudin_label")), as.factor)) %>%
+  dplyr::reframe(metrics = metrics_pclass(.)) %>%
+  tidyr::unnest(metrics) %>%
+  dplyr::mutate(.estimate = round(.estimate, 2)) %>%
+  dplyr::select(.metric, .estimate, class) %>%
+  tidyr::pivot_wider(names_from = class, values_from = .estimate)
+```
+
